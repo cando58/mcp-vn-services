@@ -2,3 +2,5 @@ mcp
 websocket-client
 requests
 feedparser
+python-dateutil
+redis
