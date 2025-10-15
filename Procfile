@@ -1,1 +1,1 @@
-worker: python mcp_pipe.py server.py
+worker: python mcp_pipe.py vn_services.py
