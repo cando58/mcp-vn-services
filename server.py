@@ -1,112 +1,59 @@
 from mcp.server.fastmcp import FastMCP
-import os, requests, feedparser
-from tools import storage
+import requests, feedparser, random
 
-mcp = FastMCP("VN Tools")
+mcp = FastMCP("VNServices")
 
-OPENWEATHER_KEY = os.getenv("OPENWEATHER_KEY")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-
+# Weather - Open-Meteo (miễn phí)
 @mcp.tool()
-def weather(city: str) -> dict:
-    """Get current weather in Vietnamese (metric, °C). Requires OPENWEATHER_KEY."""
-    if not OPENWEATHER_KEY:
-        return {"success": False, "error": "Missing OPENWEATHER_KEY env"}
-    url = "https://api.openweathermap.org/data/2.5/weather"
-    params = {"q": city, "appid": OPENWEATHER_KEY, "units": "metric", "lang": "vi"}
-    r = requests.get(url, params=params, timeout=10)
-    try:
-        data = r.json()
-    except Exception:
-        return {"success": False, "error": "Invalid weather response"}
-    if r.status_code != 200:
-        return {"success": False, "error": data.get("message", "weather api error")}
-    out = {
-        "city": data.get("name"),
-        "temp_c": data["main"]["temp"],
-        "feels_like_c": data["main"]["feels_like"],
-        "humidity": data["main"]["humidity"],
-        "description": (data["weather"][0]["description"] if data.get("weather") else ""),
-        "wind_mps": data["wind"]["speed"],
-    }
-    return {"success": True, "result": out}
+def weather(city: str="Hanoi, Vietnam") -> str:
+    """Thời tiết hiện tại & dự báo ngắn. Trả về tiếng Việt."""
+    g = requests.get("https://geocoding-api.open-meteo.com/v1/search",
+                     params={"name": city, "count": 1, "language": "vi"}).json()
+    if not g.get("results"): return f"Không tìm thấy địa danh '{city}'."
+    r0 = g["results"][0]
+    lat, lon = r0["latitude"], r0["longitude"]
+    full = f'{r0["name"]}, {r0.get("admin1","")}, {r0.get("country","")}'.strip(", ")
+    w = requests.get("https://api.open-meteo.com/v1/forecast",
+                     params={"latitude": lat, "longitude": lon,
+                             "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+                             "timezone": "Asia/Bangkok"}).json()
+    cur = w["current"]
+    t, hum, wind, code = cur["temperature_2m"], cur["relative_humidity_2m"], cur["wind_speed_10m"], cur["weather_code"]
+    desc = {0:"Trời quang",1:"Trời quang",2:"Nhiều mây",3:"U ám",
+            45:"Sương mù",48:"Sương mù",51:"Mưa phùn nhẹ",61:"Mưa nhẹ",
+            63:"Mưa vừa",65:"Mưa to",71:"Tuyết rơi",80:"Mưa rào"}.get(code,"Thời tiết thay đổi")
+    return f"{full}: {desc}. Nhiệt độ {t}°C, độ ẩm {hum}%, gió {wind} km/h."
 
+# Music - iTunes Search (miễn phí)
 @mcp.tool()
-def music_search(query: str, limit: int = 5) -> dict:
-    """Search songs using iTunes Search API (no key). Returns list of tracks with preview links."""
-    import urllib.parse
-    q = urllib.parse.quote_plus(query)
-    url = f"https://itunes.apple.com/search?term={q}&entity=song&limit={max(1, min(limit, 25))}"
-    r = requests.get(url, timeout=10)
-    js = r.json()
-    tracks = []
-    for it in js.get("results", []):
-        tracks.append({
-            "track": it.get("trackName"),
-            "artist": it.get("artistName"),
-            "album": it.get("collectionName"),
-            "previewUrl": it.get("previewUrl"),
-            "trackViewUrl": it.get("trackViewUrl"),
-        })
-    return {"success": True, "result": tracks}
+def music_search(query: str) -> str:
+    """Tìm bài nhạc theo từ khoá tiếng Việt (iTunes)."""
+    r = requests.get("https://itunes.apple.com/search",
+                     params={"term": query, "country": "vn", "media": "music", "limit": 5}).json()
+    if r.get("resultCount",0)==0: return "Không tìm thấy bài phù hợp."
+    out = [f'- {it.get("trackName")} – {it.get("artistName")} ({it.get("collectionName","")})'
+           for it in r["results"]]
+    return "Gợi ý nhạc:\n" + "\n".join(out)
 
+# News - Google News RSS (miễn phí)
 @mcp.tool()
-def news(query: str = "", country: str = "vn", limit: int = 5) -> dict:
-    """Get news. Uses NEWS_API_KEY if set, else Google News RSS (VI)."""
-    limit = max(1, min(limit, 20))
-    if NEWS_API_KEY:
-        base = "https://newsapi.org/v2/"
-        if query:
-            url = base + "everything"
-            params = {"q": query, "pageSize": limit, "language": "vi", "apiKey": NEWS_API_KEY, "sortBy": "publishedAt"}
-        else:
-            url = base + "top-headlines"
-            params = {"country": country, "pageSize": limit, "apiKey": NEWS_API_KEY}
-        r = requests.get(url, params=params, timeout=10)
-        js = r.json()
-        if r.status_code != 200:
-            return {"success": False, "error": js.get("message", "news api error")}
-        arts = []
-        for a in js.get("articles", []):
-            arts.append({"title": a.get("title"), "url": a.get("url"), "source": a.get("source", {}).get("name")})
-        return {"success": True, "result": arts}
-    else:
-        # Google News RSS (Vietnamese)
-        feed_url = "https://news.google.com/rss?hl=vi&gl=VN&ceid=VN:vi"
-        d = feedparser.parse(feed_url)
-        items = []
-        for e in d.entries[:limit]:
-            items.append({"title": e.title, "url": e.link, "source": "Google News"})
-        return {"success": True, "result": items}
+def news(topic: str="Việt Nam") -> str:
+    """Tin nóng theo chủ đề (Google News)."""
+    rss = f"https://news.google.com/rss/search?q={topic}&hl=vi&gl=VN&ceid=VN:vi"
+    feed = feedparser.parse(rss)
+    if not feed.entries: return "Không thấy bản tin phù hợp."
+    return "Tin mới:\n" + "\n".join(f"- {e.title}" for e in feed.entries[:5])
 
+# Joke - Việt hoá đơn giản
+JOKES = [
+    "Tại sao máy tính hay lạnh? Vì có nhiều 'quạt' (fans).",
+    "Điện thoại bảo với sạc: 'Gặp cậu là mình thấy đầy năng lượng!'",
+    "Học online mãi thành… cao thủ ALT+F4.",
+]
 @mcp.tool()
-def joke(category: str = "Any") -> dict:
-    """Return a random joke (English) from JokeAPI."""
-    import urllib.parse
-    cat = urllib.parse.quote(category or "Any")
-    url = f"https://v2.jokeapi.dev/joke/{cat}?type=single&safe-mode"
-    r = requests.get(url, timeout=10)
-    js = r.json()
-    if js.get("error"):
-        return {"success": False, "error": js.get("message", "joke api error")}
-    return {"success": True, "result": js.get("joke")}
-
-@mcp.tool()
-def alarm_set(iso_time: str, title: str) -> dict:
-    """Create an alarm saved in /data/alarms.json. Example iso_time: 2025-10-01T07:30:00+07:00"""
-    a = storage.add_alarm(iso_time, title)
-    return {"success": True, "result": a}
-
-@mcp.tool()
-def alarm_list() -> dict:
-    """List all alarms."""
-    return {"success": True, "result": storage.list_alarms()}
-
-@mcp.tool()
-def alarm_delete(alarm_id: str) -> dict:
-    """Delete alarm by id."""
-    return {"success": True, "result": storage.delete_alarm(alarm_id)}
+def joke() -> str:
+    """Kể một câu đùa ngắn tiếng Việt."""
+    return random.choice(JOKES)
 
 if __name__ == "__main__":
-    # Run as stdio transport for XiaoZhi MCP pipe
     mcp.run(transport="stdio")
